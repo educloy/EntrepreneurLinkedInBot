@@ -174,3 +174,4 @@ cython_debug/
 .pypirc
 
 .access_token
+api_key.json
