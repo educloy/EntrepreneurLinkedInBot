@@ -2,12 +2,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import webbrowser, requests, secrets, urllib.parse
 from urllib.error import HTTPError
 
-from requests import Response
 from http import HTTPStatus
 
 import threading, logging, time, json, os
 from datetime import datetime, timedelta
-from collections.abc import Callable
 from random import randint
 
 DEFAULT_ADDRESS = "0.0.0.0"
@@ -70,7 +68,6 @@ class AuthServer():
         self._client_id = None
         self.__client_secret = None
         self.__credentials = None
-        self.__headers = None
         self.__token_file_path = None
 
         if start is True:
@@ -108,7 +105,7 @@ class AuthServer():
         self.server.server_close()
         logging.info('Server stopped!')
 
-    def get_access_token(self, client_id: str, client_secret: str, scope: list[str],
+    def create_access_token(self, client_id: str, client_secret: str, scope: list[str],
                          redirect_uri: str = REDIRECT_URI_AUTH,
                          timeout: int = DEFAULT_TIMEOUT) -> None:
         """
@@ -210,54 +207,6 @@ class AuthServer():
         with open(self.__token_file_path, "w") as f:
             json.dump(self.__credentials, f)
 
-        # Update the header
-        self.__headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Client-Id": self._client_id,
-            "Content-Type": "application/json"
-        }
-
-    @staticmethod
-    def __check_request(request_function: Callable) -> Callable:
-        """
-        Checks that the token is still valid, and refreshes it if necessary.
-        :param request_function: function that requests the Twitch API
-        """
-
-        def wrapper(self, endpoint: str, data: dict = None) -> dict:
-            endpoint = endpoint
-            params = {"self": self, "endpoint": endpoint}
-            if data:
-                params["data"] = data
-            response = request_function(**params)
-            if response.status_code >= 300:
-                if response.status_code == 401:
-                    logging.error(response.content)
-                    raise HTTPError("Access token may expired!!")
-                else:
-                    logging.error(response.content)
-                    raise HTTPError(
-                        f"The url {endpoint} is not correct or you don't have the rights to use it!")
-            return response.json()
-
-        return wrapper
-
-    @__check_request
-    def get_request(self, endpoint: str) -> Response:
-        """
-        Make a get request on the Twitch API
-        :param endpoint: a Twitch API endpoint
-        """
-        return requests.get(url=endpoint, headers=self.__headers)
-
-    @__check_request
-    def post_request(self, endpoint: str, data: dict) -> Response:
-        """
-        Make a post request on the Twitch API
-        :param endpoint: a Twitch API endpoint
-        :param data: data provided for post request
-        """
-        return requests.post(url=endpoint, json=data, headers=self.__headers)
 
     def authentication(self, client_id: str, client_secret: str, scope: list[str],
                        token_file_path: str = ACCESS_TOKEN_FILE, timeout: int = DEFAULT_TIMEOUT,
@@ -275,7 +224,7 @@ class AuthServer():
         self.__token_file_path = token_file_path
 
         if not os.path.exists(self.__token_file_path):
-            self.get_access_token(client_id=client_id, client_secret=client_secret, scope=scope,
+            self.create_access_token(client_id=client_id, client_secret=client_secret, scope=scope,
                                   redirect_uri=redirect_uri, timeout=timeout)
         else:
             with open(self.__token_file_path, "r") as f:
@@ -285,10 +234,7 @@ class AuthServer():
                 os.remove(self.__token_file_path)
                 self.authentication(client_id, client_secret, scope, self.__token_file_path, timeout, redirect_uri)
 
-            else:
-                self.__headers = {
-                    "Authorization": f"Bearer {self.__credentials['access_token']}",
-                    "Client-Id": self._client_id,
-                    "Content-Type": "application/json"
-                }
+    def get_access_token(self):
+        return self.__credentials.get("access_token", None)
+
 
