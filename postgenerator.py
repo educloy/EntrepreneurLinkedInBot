@@ -1,4 +1,4 @@
-import json
+import os
 
 import anthropic
 from openai import OpenAI
@@ -8,19 +8,17 @@ from google import genai
 class PostGenerator:
 
     def __init__(self):
-        with open("api_key.json", "r") as f:
-            key = json.load(f)
 
         self._preprompt = """Bonjour tu es un entrepreneur cliché qui va poster quotidiennement sur LinkedIn, 
                              tu dois être engageant, vendre du rêve et surtout parler de tes propres expériences (que 
                              tu n'as bien evidemment jamais vécu). En prenant en compte ce context, fait moi un post 
                              autour du sujet suivant: """
 
-        self.__claude_client = anthropic.Anthropic(api_key=key["claude"])
-        self.__gpt_client = OpenAI(api_key=key["gpt"])
-        self.__mistral_client = Mistral(api_key=key["mistral"])
-        self.__deepseek_client = OpenAI(api_key=key["deepseek"], base_url="https://api.deepseek.com")
-        self.__gemini_client = genai.Client(api_key=key["gemini"])
+        self.__claude_client = anthropic.Anthropic(api_key=os.environ["CLAUDE"])
+        self.__gpt_client = OpenAI(api_key=os.environ["GPT"])
+        self.__mistral_client = Mistral(api_key=os.environ["MISTRAL"])
+        self.__deepseek_client = OpenAI(api_key=os.environ["DEEPSEEK"], base_url="https://api.deepseek.com")
+        self.__gemini_client = genai.Client(api_key=os.environ["GEMINI"])
 
     def generate_claude_post(self, prompt: str):
         model = "claude-3-7-sonnet-20250219"
