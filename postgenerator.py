@@ -5,6 +5,10 @@ from openai import OpenAI
 from mistralai import Mistral
 from google import genai
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 class PostGenerator:
 
     def __init__(self):
@@ -83,10 +87,4 @@ class PostGenerator:
         message = [self._preprompt + prompt]
         answer = self.__gemini_client.models.generate_content(model=model, contents=message)
         return answer.text
-
-p_gen = PostGenerator()
-
-message = "L'impact des loutres dans l'économie de l'Ouganda"
-
-print(p_gen.generate_gemini_post(message))
 
