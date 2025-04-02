@@ -72,7 +72,8 @@ class LinkedInBot:
         else:
             raise RuntimeError("Already authenticate")
 
-    def get_data_from_post(self, post_url):
+    def get_data_from_post(self, post_url, poll_format:bool=False):
+        data = {}
         self.page.goto(post_url)
 
         # Allow to display all comments
@@ -90,9 +91,19 @@ class LinkedInBot:
             time.sleep(2)
             more_comments = self.page.get_by_label("Afficher plus de commentaires")
 
+        locator_id = "text=Voir les réponses précédentes"
+        more_comments = self.page.locator(locator_id).all()
+        for button in more_comments:
+            if button.is_visible():
+                button.click()
+        time.sleep(2)
 
         comments = []
         soup = BeautifulSoup(self.page.content(), "html.parser")
+
+        if poll_format:
+            poll_option, number_voter = self.get_data_from_poll(soup)
+            data.update({"poll": poll_option, "voters": number_voter})
 
         for article in soup.find_all(name="article", attrs={"tabindex": '-1'}):
             # Check only main comments and handle reply in relation to the comment
@@ -126,30 +137,22 @@ class LinkedInBot:
 
         # Get the repost and comment number
         social = soup.find_all("button", "social-details-social-counts__btn")
-        comment_number = int(re.sub('[^0-9]', '', social[0].text))
-        repost_number = int(re.sub('[^0-9]', '', social[1].text))
 
-        return comments, reaction_number, comment_number, repost_number
+        comment_number = int(re.sub('[^0-9]', '', social[0].text)) if len(social) >= 1 else 0
+        repost_number = int(re.sub('[^0-9]', '', social[1].text)) if len(social) >= 2 else 0
+
+        data.update({"comments": comments, "comment_number": comment_number, "reaction_number":reaction_number,
+                     "repost_number": repost_number})
+        return data
+
+    def get_data_from_poll(self, soup:BeautifulSoup):
+        poll_option = [poll.text.split("\n") for poll in soup.find_all('div', attrs={"class": "update-components-poll-option"})]
+        poll_option = [[p.strip() for p in poll]for poll in poll_option]
+        poll_option = [[p for p in poll if p] for poll in poll_option]
+        poll_option = [{"choice": p[0], "result": p[1]} for p in poll_option]
+        number_voter = int(re.sub('[^0-9]', '', soup.find("p", attrs={"class": "update-components-poll-summary__option-text"}).text))
+        return  poll_option, number_voter
 
     def stop(self):
         self.__playwright.stop()
-
-
-if __name__ == '__main__':
-    bot = LinkedInBot()
-    bot.open_chromium()
-    try:
-        bot.authenticate_on_linkedin()
-    except RuntimeError:
-        pass
-
-    bot.get_data_from_post("https://www.linkedin.com/posts/matsanchez_cest-cette-simple-ligne-de-code-qui-a-permis-activity-7310276777329721346-wH9C/?utm_source=share&utm_medium=member_desktop&rcm=ACoAABXnFNwBSvO0haPwq7cw1i2TElacPVcje68")
-    # bot.post("Ceci est un message généré automatiquement", date=datetime.today() + timedelta(hours=1))
-    # bot.create_poll("Test de sondage")
-    print("Done")
-    try:
-        while True:
-            pass
-    finally:
-        bot.stop()
 
