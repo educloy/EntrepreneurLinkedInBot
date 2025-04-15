@@ -20,9 +20,7 @@ class PostGenerator:
             self._preprompt = f.read()
 
         self.__claude_client = anthropic.Anthropic(api_key=os.environ["CLAUDE"])
-        # self.__gpt_client = OpenAI(api_key=os.environ["GPT"])
         self.__mistral_client = Mistral(api_key=os.environ["MISTRAL"])
-        # self.__deepseek_client = OpenAI(api_key=os.environ["DEEPSEEK"], base_url="https://api.deepseek.com")
         self.__gemini_client = genai.Client(api_key=os.environ["GEMINI"])
 
     def generate_claude_post(self, prompt: str):
@@ -48,6 +46,18 @@ class PostGenerator:
     def generate_gpt_post(self, prompt: str, page:Page):
         page.goto("https://chatgpt.com/")
         time.sleep(2)
+        selector = f'button[aria-label="Ouvrir le menu du profil"]'
+
+        exist = False
+        while exist:
+            try:
+                button = page.wait_for_selector(selector, timeout=5000)
+                exist = button is not None
+            except:
+                exist = False
+                print("Need to login on ChatGPT")
+                input()
+
         page.locator("#prompt-textarea").fill(self._preprompt + prompt)
         time.sleep(2)
         page.get_by_label("Envoyer le prompt").click()

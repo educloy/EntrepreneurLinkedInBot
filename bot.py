@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import re
@@ -5,6 +6,7 @@ import time
 import subprocess
 from datetime import datetime, timedelta
 from typing import Literal
+import pyperclip
 
 from bs4 import BeautifulSoup
 
@@ -12,6 +14,8 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext
 from postgenerator import PostGenerator
 
 from dotenv import load_dotenv
+
+from git import Repo
 
 load_dotenv()
 
@@ -52,12 +56,17 @@ def next_day_at_time(target_day: Literal["monday", "tuesday", "wednesday", "thur
 
 class LinkedInBot:
 
+    DATABASE_PATH = os.path.join(os.path.dirname(__file__), "GeneratedPostDatabase/database.json")
+    TEXT_PATH = os.path.join(os.path.dirname(__file__), "text.json")
+    POST_URL_PATH = os.path.join(os.path.dirname(__file__), "post_url.json")
+
     def __init__(self):
         self.generator = PostGenerator()
         self.page: Page | None = None
         self.__playwright = sync_playwright().start()
         self.__context: BrowserContext | None = None
         self.generator = PostGenerator()
+        self.__session_open = False
 
     def post(self, msg: str, date: datetime, poll=False):
         self.page.get_by_role("button", name="Commencer un post").click()
@@ -73,7 +82,9 @@ class LinkedInBot:
         time.sleep(0.5)
         self.page.get_by_role("button", name="Suivant").click()
         time.sleep(0.1)
-        self.page.get_by_role("button", name="Suivant").click()
+        if self.page.get_by_role("button", name="Suivant").is_visible():
+            self.page.get_by_role("button", name="Suivant").click()
+            time.sleep(0.1)
         self.page.get_by_role("button", name="Programmer", exact=True).click()
 
     def create_poll(self, msg: str):
@@ -94,7 +105,7 @@ class LinkedInBot:
 
     def open_chromium(self):
         subprocess.Popen(
-            " /Applications/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=1234 --user-data-dir=foo".split())
+            " /Applications/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=1234".split())
         time.sleep(2)
         chromium = self.__playwright.chromium
         browser = chromium.connect_over_cdp('http://127.0.0.1:1234')
@@ -115,74 +126,90 @@ class LinkedInBot:
         else:
             raise RuntimeError("Already authenticate")
 
+    def init_session(self):
+        if self.__session_open:
+            return
+
+        self.open_chromium()
+
+        try:
+            self.authenticate_on_linkedin()
+        except RuntimeError:
+            pass
+
+        self.__session_open = True
+
+
     def get_data_from_post(self, post_url, poll_format: bool = False):
         data = {}
         self.page.goto(post_url)
 
-        # Allow to display all comments
-        comment_sort_button = self.page.get_by_role("button", name="Les plus pertinents est l’")
-        if not comment_sort_button.is_visible(timeout=10):
-            raise TimeoutError("Page load to slowly!")
-        comment_sort_button.click()
-
-        # Click on button to display all comments
-        self.page.get_by_text("Les plus récents", exact=True).click()
-        time.sleep(2)
-        more_comments = self.page.get_by_label("Afficher plus de commentaires")
-        while more_comments.is_visible(timeout=10):
-            more_comments.click()
-            time.sleep(2)
-            more_comments = self.page.get_by_label("Afficher plus de commentaires")
-
-        locator_id = "text=Voir les réponses précédentes"
-        more_comments = self.page.locator(locator_id).all()
-        for button in more_comments:
-            if button.is_visible():
-                button.click()
-        time.sleep(2)
-
         comments = []
-        soup = BeautifulSoup(self.page.content(), "html.parser")
+        try:
+            # Allow to display all comments
+            comment_sort_button = self.page.get_by_role("button", name="Les plus pertinents est l’")
+            if comment_sort_button.is_visible(timeout=10):
+
+                comment_sort_button.click()
+
+                # Click on button to display all comments
+                self.page.get_by_text("Les plus récents", exact=True).click()
+                time.sleep(2)
+                more_comments = self.page.get_by_label("Afficher plus de commentaires")
+                while more_comments.is_visible(timeout=10):
+                    more_comments.click()
+                    time.sleep(2)
+                    more_comments = self.page.get_by_label("Afficher plus de commentaires")
+
+                locator_id = "text=Voir les réponses précédentes"
+                more_comments = self.page.locator(locator_id).all()
+                for button in more_comments:
+                    if button.is_visible():
+                        button.click()
+                time.sleep(2)
+
+            soup = BeautifulSoup(self.page.content(), "html.parser")
+
+            for article in soup.find_all(name="article", attrs={"tabindex": '-1'}):
+                # Check only main comments and handle reply in relation to the comment
+                if "comments-comment-entity--reply" not in article.attrs["class"]:
+                    # Find all comments
+                    comment_list = article.find_all("div", "update-components-text relative")
+                    if comment_list:
+                        # Get all account name to remove them when it appears in the text's comment
+                        account_name = [name.text.encode('ascii', 'ignore').decode('ascii').strip() for name in
+                                        article.find_all("span",
+                                                         attrs={"class": "comments-comment-meta__description-title"})]
+                        # Remove all link to account and account name to anonymize the data
+                        for comment in comment_list:
+                            account_link = comment.find_all("a", attrs={"class": "ember-view"})
+                            if account_link:
+                                for name in account_link:
+                                    name.extract()
+                            for name in account_name:
+                                for word in name.split():
+                                    comment.string = comment.text.replace(word, "")
+
+                        # Store the comment in a dictionnary : {"comment": main comment, "reply": list of all reply}
+                        comment = {"comment": comment_list[0].text.strip()}
+                        if len(comment_list) > 1:
+                            comment["reply"] = [reply.text.strip() for reply in comment_list[1:]]
+                        comments.append(comment)
+        except TimeoutError:
+            soup = BeautifulSoup(self.page.content(), "html.parser")
 
         if poll_format:
             poll_option, number_voter = self.get_data_from_poll(soup)
             data.update({"poll": poll_option, "voters": number_voter})
 
-        for article in soup.find_all(name="article", attrs={"tabindex": '-1'}):
-            # Check only main comments and handle reply in relation to the comment
-            if "comments-comment-entity--reply" not in article.attrs["class"]:
-                # Find all comments
-                comment_list = article.find_all("div", "update-components-text relative")
-                if comment_list:
-                    # Get all account name to remove them when it appears in the text's comment
-                    account_name = [name.text.encode('ascii', 'ignore').decode('ascii').strip() for name in
-                                    article.find_all("span",
-                                                     attrs={"class": "comments-comment-meta__description-title"})]
-                    # Remove all link to account and account name to anonymize the data
-                    for comment in comment_list:
-                        account_link = comment.find_all("a", attrs={"class": "ember-view"})
-                        if account_link:
-                            for name in account_link:
-                                name.extract()
-                        for name in account_name:
-                            for word in name.split():
-                                comment.string = comment.text.replace(word, "")
+        self.page.get_by_role("link", name="Voir les statistiques").click()
 
-                    # Store the comment in a dictionnary : {"comment": main comment, "reply": list of all reply}
-                    comment = {"comment": comment_list[0].text.strip()}
-                    if len(comment_list) > 1:
-                        comment["reply"] = [reply.text.strip() for reply in comment_list[1:]]
-                    comments.append(comment)
-
-        # Get the reaction number
-        reaction_number = soup.find("span", "social-details-social-counts__reactions-count").text
-        reaction_number = int(re.sub('[^0-9]', '', reaction_number))
-
-        # Get the repost and comment number
-        social = soup.find_all("button", "social-details-social-counts__btn")
-
-        comment_number = int(re.sub('[^0-9]', '', social[0].text)) if len(social) >= 1 else 0
-        repost_number = int(re.sub('[^0-9]', '', social[1].text)) if len(social) >= 2 else 0
+        selector = 'ul[aria-labelledby="member-analytics-addon-card-1"]'
+        self.page.wait_for_selector(selector)
+        engagement_text = self.page.query_selector(selector).inner_text().split("\n")
+        reaction_number = int(engagement_text[1])
+        comment_number = int(engagement_text[3])
+        repost_number = int(engagement_text[5])
 
         data.update({"comments": comments, "comment_number": comment_number, "reaction_number": reaction_number,
                      "repost_number": repost_number})
@@ -194,49 +221,208 @@ class LinkedInBot:
         poll_option = [[p.strip() for p in poll] for poll in poll_option]
         poll_option = [[p for p in poll if p] for poll in poll_option]
         poll_option = [{"choice": p[0], "result": p[1]} for p in poll_option]
+        poll_voter = soup.find("div", attrs={"class": "update-components-poll-summary__subtext-container"}).text
+        poll_voter = [text for text in poll_voter.split("\n") if text][0]
         number_voter = int(
-            re.sub('[^0-9]', '', soup.find("p", attrs={"class": "update-components-poll-summary__option-text"}).text))
+            re.sub('[^0-9]', '', poll_voter))
         return poll_option, number_voter
 
     def stop(self):
         self.__playwright.stop()
 
-    def generate_post(self, post_source_url: str):
-        self.open_chromium()
+    def generate_post(self, post_source_url: str = None, subject: str = None):
+        self.init_session()
 
-        try:
-            self.authenticate_on_linkedin()
-        except RuntimeError:
-            pass
+        if not subject:
+            data = self.get_data_from_post(post_source_url, poll_format=True)
 
-        # data = self.get_data_from_post(post_source_url, poll_format=True)
-        #
-        # answer = ""
-        # subject = ""
-        # while answer != "y":
-        #     subject = random.choice(data["comments"])["comment"]
-        #     print(subject)
-        #     answer = input()
+            answer = ""
+            subject = ""
+            while answer != "y":
+                subject = random.choice(data["comments"])["comment"]
+                print(subject)
+                answer = input()
 
-        subject = "Les lamantins de Nouvelle Zélande"
+        with open(self.TEXT_PATH, "r") as f:
+            post_text = json.load(f)
 
-        prepost = "Post généré par {model} sur le thème suivant : '{subject}'\n\n"
+        prepost = post_text["endpost"]
 
         post = self.generator.generate_mistral_post(subject)
-        self.post(prepost.format(model="Mistral", subject=subject) + post,
+        self.post(post + prepost.format(model="Mistral", subject=subject),
                   next_day_at_time("monday", hour=10, minute=30))
 
-        post = self.generator.generate_gemini_post(subject)
-        self.post(prepost.format(model="Gemini", subject=subject) + post,
+        post = self.generator.generate_gpt_post(subject, self.get_new_page())
+        self.post(post + prepost.format(model="ChatGPT", subject=subject),
                   next_day_at_time("tuesday", hour=10, minute=30))
 
-        post = self.generator.generate_claude_post(subject)
-        self.post(prepost.format(model="Claude", subject=subject) + post,
+        post = self.generator.generate_gemini_post(subject)
+        self.post(post + prepost.format(model="Gemini", subject=subject),
                   next_day_at_time("wednesday", hour=10, minute=30))
 
-        post = self.generator.generate_gpt_post(subject, self.get_new_page())
-        self.post(prepost.format(model="ChatGPT", subject=subject) + post,
+        post = self.generator.generate_claude_post(subject)
+        self.post(post + prepost.format(model="Claude", subject=subject),
                   next_day_at_time("thursday", hour=10, minute=30))
 
-        self.post("Quel model vous a le plus convaincu?", next_day_at_time("friday", hour=17, minute=30),
+        self.post(post_text["poll"].format(subject=subject), next_day_at_time("friday", hour=17, minute=30),
                   poll=True)
+
+    def get_generated_post_link(self, post_text: str | list[str]):
+        self.init_session()
+        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/")
+        self.page.get_by_role("link", name="Afficher tous les posts").click()
+
+        if type(post_text) is str:
+            post_text = [post_text]
+
+        aria_label = "Ouvrir le menu de commandes pour le post de Edouard DUCLOY"
+        time.sleep(3)
+        for _ in range(10):
+            self.page.evaluate(f"window.scrollBy(0, 500)")
+            time.sleep(0.5)
+        all_div_post = self.page.query_selector_all("div.feed-shared-update-v2__control-menu-container")
+
+        link = []
+        for text in post_text:
+            text = text.split("\n")[0]
+
+            done = False
+            for div in all_div_post:
+                div_text = div.inner_text()
+                if text in div_text:
+                    div.query_selector(f'button[aria-label="{aria_label}"]').click()
+                    done = True
+                    break
+
+            if done:
+
+                link_option_selector = f'text="Copier le lien vers le post"'
+
+                # Attendre que l'option apparaisse dans la fenêtre contextuelle
+                self.page.wait_for_selector(link_option_selector, state="visible")
+
+                # Trouver l'élément contenant le texte cible
+                link_element = self.page.query_selector(link_option_selector)
+
+                if link_element:
+                    link_element.click()
+                    time.sleep(1)
+                    link.append(pyperclip.paste())
+                else:
+                    print(f"Élément avec le texte 'Copier le lien vers le post' non trouvé")
+                    return link.append(None)
+            else:
+                raise RuntimeError("Post not found")
+        return link
+
+    def get_last_post_url(self):
+        with open(self.DATABASE_PATH, "r") as f:
+            database: dict = json.load(f)
+
+        todo = database["todo"]
+
+        post_text = [value["text"] for value in todo["post"].values()]
+
+        post_link = {model:url for model, url in zip(todo["post"].keys(), self.get_generated_post_link(post_text))}
+
+        with open(self.POST_URL_PATH, "w") as f:
+            json.dump(post_link, f)
+
+
+    def update_database(self):
+        with open(self.DATABASE_PATH, "r") as f:
+            database: dict = json.load(f)
+
+        with open(self.POST_URL_PATH, "r") as f:
+            post_link = json.load(f)
+
+        self.init_session()
+
+        todo = database["todo"]
+        data = todo.copy()
+
+        for model, value in todo["post"].items():
+            link = post_link[model]
+            if not link:
+                raise RuntimeError(f"Link for post of {model} not found")
+
+            post_data = self.get_data_from_post(link)
+
+            data[model].update({"stat": post_data})
+
+        database["todo"].update(data)
+
+        with open(self.DATABASE_PATH, "w") as f:
+            json.dump(database, f)
+
+    def get_poll_data(self):
+
+        with open(self.DATABASE_PATH, "r") as f:
+            database: dict = json.load(f)
+
+        with open(self.TEXT_PATH, "r") as f:
+            text: str = json.load(f)["poll"].split("\n")[2].format(subject=database["todo"]["subject"])
+
+        self.init_session()
+        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/")
+        self.page.get_by_role("link", name="Afficher tous les posts").click()
+
+        aria_label = "Ouvrir le menu de commandes pour le post de Edouard DUCLOY"
+        time.sleep(3)
+        for _ in range(5):
+            self.page.evaluate(f"window.scrollBy(0, 500)")
+            time.sleep(0.5)
+        all_div_post = self.page.query_selector_all("div.feed-shared-update-v2__control-menu-container")
+
+        done = False
+        for div in all_div_post:
+            div_text = div.inner_text()
+            if text in div_text:
+                div.query_selector(f'button[aria-label="{aria_label}"]').click()
+                done = True
+                break
+
+        if done:
+
+            link_option_selector = f'text="Copier le lien vers le post"'
+
+            # Attendre que l'option apparaisse dans la fenêtre contextuelle
+            self.page.wait_for_selector(link_option_selector, state="visible")
+
+            # Trouver l'élément contenant le texte cible
+            link_element = self.page.query_selector(link_option_selector)
+
+            if link_element:
+                link_element.click()
+                time.sleep(1)
+                poll_link = pyperclip.paste()
+            else:
+                raise RuntimeError(f"Élément avec le texte 'Copier le lien vers le post' non trouvé")
+        else:
+            raise RuntimeError("Post not found")
+
+        post_data = self.get_data_from_post(poll_link, poll_format=True)
+
+        database["todo"]["poll"] = post_data
+
+        with open(self.DATABASE_PATH, "w") as f:
+            json.dump(database, f)
+
+    def commit_database(self):
+        with open(self.DATABASE_PATH, "r") as f:
+            database: dict = json.load(f)
+
+        database["data"].append(database["todo"])
+        database.pop("todo")
+
+        with open(self.DATABASE_PATH, "w") as f:
+            json.dump(database, f)
+
+        repo = Repo(os.path.dirname(self.DATABASE_PATH))
+
+        repo.git.add(update=True)
+        repo.index.commit(f"Database update from {datetime.today().strftime('%Y/%m/%d')}")
+        origin = repo.remote(name="origin")
+        origin.push()
+
+
