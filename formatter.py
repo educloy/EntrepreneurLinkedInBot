@@ -61,13 +61,10 @@ def apply_style(text, mapping):
     return result
 
 
-def convert_markdown_to_unicode(markdown_text):
+def convert_markdown_to_unicode(text):
     """
     Convertit la syntaxe Markdown en texte stylisé Unicode
     """
-    # Créer une copie du texte pour travailler
-    result = markdown_text
-
     # Créer les mappings de style
     bold_mapping = create_mapping('bold')
     italic_mapping = create_mapping('italic')
@@ -75,60 +72,57 @@ def convert_markdown_to_unicode(markdown_text):
     monospace_mapping = create_mapping('monospace')
     strikethrough_mapping = create_mapping('strikethrough')
 
-    # Fonction auxiliaire pour remplacer les correspondances en toute sécurité
-    def replace_matches(pattern, mapping):
-        matches = []
+    # Fonction qui recherche et remplace tous les motifs d'un type spécifique
+    def process_patterns(pattern_re, mapping):
+        nonlocal text
 
-        # Collecter toutes les correspondances
-        for match in re.finditer(pattern, result):
-            matches.append({
-                'full_match': match.group(0),
-                'inner_text': match.group(1),
-                'start': match.start(),
-                'end': match.end()
-            })
+        # Trouver tous les motifs
+        matches = list(pattern_re.finditer(text))
 
-        # Remplacer les correspondances dans l'ordre inverse pour éviter les problèmes de décalage
-        # avec la modification de la chaîne
+        # Traiter les correspondances de la fin vers le début pour éviter les décalages
         for match in reversed(matches):
-            styled_text = apply_style(match['inner_text'], mapping)
-            result_list = list(result)
-            result_list[match['start']:match['end']] = styled_text
-            nonlocal result
-            result = ''.join(result_list)
+            full_match = match.group(0)
+            content = match.group(1)
 
-    # Traiter les styles dans un ordre spécifique pour gérer correctement l'imbrication
-    # Ordre: gras+italique, gras, italique, code, barré
+            # Appliquer le style au contenu
+            styled_content = apply_style(content, mapping)
 
-    # 1. Traiter le gras et italique (***texte***)
-    replace_matches(r'\*\*\*(.*?)\*\*\*', bold_italic_mapping)
+            # Remplacer dans le texte original
+            start, end = match.span()
+            text = text[:start] + styled_content + text[end:]
 
-    # 2. Traiter le gras (**texte**)
-    replace_matches(r'\*\*(.*?)\*\*', bold_mapping)
+    # Traiter les différents formats dans un ordre spécifique
 
-    # 3. Traiter l'italique (*texte*)
-    replace_matches(r'\*(.*?)\*', italic_mapping)
+    # 1. Bold & Italic (***text***)
+    pattern_bold_italic = re.compile(r'\*\*\*(.*?)\*\*\*')
+    process_patterns(pattern_bold_italic, bold_italic_mapping)
 
-    # 4. Traiter le monospace/code (`texte`)
-    replace_matches(r'`(.*?)`', monospace_mapping)
+    # 2. Bold (**text**)
+    pattern_bold = re.compile(r'\*\*(.*?)\*\*')
+    process_patterns(pattern_bold, bold_mapping)
 
-    # 5. Traiter le texte barré (~~texte~~)
-    replace_matches(r'~~(.*?)~~', strikethrough_mapping)
+    # 3. Italic (*text*)
+    pattern_italic = re.compile(r'\*(.*?)\*')
+    process_patterns(pattern_italic, italic_mapping)
 
-    return result
+    # 4. Code (`text`)
+    pattern_code = re.compile(r'`(.*?)`')
+    process_patterns(pattern_code, monospace_mapping)
+
+    # 5. Strikethrough (~~text~~)
+    pattern_strikethrough = re.compile(r'~~(.*?)~~')
+    process_patterns(pattern_strikethrough, strikethrough_mapping)
+
+    return text
 
 
 class MarkdownFormatter:
-    """
-    Classe pour formater du texte Markdown en texte Unicode stylisé
-    """
-
     @staticmethod
-    def format(text):
+    def format(markdown_text):
         """
         Formate le texte Markdown en Unicode
         """
-        return convert_markdown_to_unicode(text)
+        return convert_markdown_to_unicode(markdown_text)
 
     @staticmethod
     def bold(text):

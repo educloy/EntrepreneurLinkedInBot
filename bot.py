@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Literal
 import pyperclip
+from formatter import MarkdownFormatter
 
 from bs4 import BeautifulSoup
 
@@ -286,25 +287,25 @@ class LinkedInBot:
 
         post = remove_markdown(self.generator.generate_mistral_post(subject))
         database["todo"]["post"] = {"Mistral": {"text": post}}
-        self.post(post + prepost.format(model="Mistral", subject=subject),
+        self.post(MarkdownFormatter.format(post) + prepost.format(model="Mistral", subject=subject),
                   next_day_at_time("monday", hour=10, minute=30))
 
         try:
             post = remove_markdown(self.generator.generate_gpt_post(subject, self.get_new_page()))
             database["todo"]["post"]["ChatGPT"] = {"text": post}
-            self.post(post + prepost.format(model="ChatGPT", subject=subject),
+            self.post(MarkdownFormatter.format(post) + prepost.format(model="ChatGPT", subject=subject),
                       next_day_at_time("tuesday", hour=10, minute=30))
         except Exception:
             database["todo"]["post"]["ChatGPT"] = {"text": ""}
 
         post = remove_markdown(self.generator.generate_gemini_post(subject))
         database["todo"]["post"]["Gemini"] = {"text": post}
-        self.post(post + prepost.format(model="Gemini", subject=subject),
+        self.post(MarkdownFormatter.format(post) + prepost.format(model="Gemini", subject=subject),
                   next_day_at_time("wednesday", hour=10, minute=30))
 
         post = remove_markdown(self.generator.generate_claude_post(subject))
         database["todo"]["post"]["Claude"] = {"text": post}
-        self.post(post + prepost.format(model="Claude", subject=subject),
+        self.post(MarkdownFormatter.format(post) + prepost.format(model="Claude", subject=subject),
                   next_day_at_time("thursday", hour=10, minute=30))
 
         with open(self.DATABASE_PATH, "w",  encoding="utf-8") as f:
