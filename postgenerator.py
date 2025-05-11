@@ -62,7 +62,7 @@ class PostGenerator:
         time.sleep(2)
         page.get_by_label("Envoyer le prompt").click()
         # Waits for GPT to finish generating its answer
-        page.wait_for_selector("button[aria-label='Copier']", state="visible", timeout=60000)
+        page.wait_for_selector("button[aria-label='Copier']", state="visible", timeout=300000)
         # Get the answer
         soup = BeautifulSoup(page.content(), "html.parser")
         page.close()

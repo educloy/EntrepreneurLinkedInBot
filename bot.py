@@ -1,9 +1,9 @@
 import json
+import logging
 import os
 import random
 import re
 import time
-import subprocess
 from datetime import datetime, timedelta
 from typing import Literal
 import pyperclip
@@ -54,11 +54,40 @@ def next_day_at_time(target_day: Literal["monday", "tuesday", "wednesday", "thur
     return next_day
 
 
-class LinkedInBot:
+def unescape_unicode(text):
+    """Convertit les séquences d'échappement Unicode en leurs caractères correspondants."""
+    import codecs
+    import re
 
+    # Pattern pour trouver les séquences Unicode comme \u00e9
+    pattern = r'\\u([0-9a-fA-F]{4})'
+
+    # Fonction qui remplace chaque séquence trouvée par son caractère Unicode
+    def replace(match):
+        hex_code = match.group(1)
+        return chr(int(hex_code, 16))
+
+    # Remplacer toutes les séquences trouvées
+    return re.sub(pattern, replace, text)
+
+
+def remove_markdown(text):
+    if not isinstance(text, str):
+        return text
+
+    # Retirer le formatage gras
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+
+    # Ajouter d'autres règles si nécessaire
+    # ...
+
+    return text
+
+class LinkedInBot:
     DATABASE_PATH = os.path.join(os.path.dirname(__file__), "GeneratedPostDatabase/database.json")
     TEXT_PATH = os.path.join(os.path.dirname(__file__), "text.json")
     POST_URL_PATH = os.path.join(os.path.dirname(__file__), "post_url.json")
+    SUBJECT_PATH = os.path.join(os.path.dirname(__file__), "subject.txt")
 
     def __init__(self):
         self.generator = PostGenerator()
@@ -71,7 +100,7 @@ class LinkedInBot:
     def post(self, msg: str, date: datetime, poll=False):
         self.page.get_by_role("button", name="Commencer un post").click()
         self.page.get_by_label("Éditeur de texte pour créer du contenu").fill(msg)
-        time.sleep(0.5)
+        time.sleep(1)
 
         if poll:
             self.create_poll("Quel model vous a-t-il le plus convaincu?")
@@ -79,12 +108,9 @@ class LinkedInBot:
         self.page.get_by_label("Programmer un post").click()
         self.page.get_by_role("textbox", name="Date").fill(date.strftime("%d/%m/%Y"))
         self.page.get_by_label("Time").fill(f"{date.hour}:{date.minute}")
-        time.sleep(0.5)
         self.page.get_by_role("button", name="Suivant").click()
-        time.sleep(0.1)
         if self.page.get_by_role("button", name="Suivant").is_visible():
             self.page.get_by_role("button", name="Suivant").click()
-            time.sleep(0.1)
         self.page.get_by_role("button", name="Programmer", exact=True).click()
 
     def create_poll(self, msg: str):
@@ -104,12 +130,15 @@ class LinkedInBot:
         self.page.get_by_label("Terminé").click()
 
     def open_chromium(self):
-        subprocess.Popen(
-            " /Applications/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=1234".split())
-        time.sleep(2)
-        chromium = self.__playwright.chromium
-        browser = chromium.connect_over_cdp('http://127.0.0.1:1234')
-        self.__context = browser.contexts[0]
+        # subprocess.Popen(
+        #     " /Applications/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=1234".split())
+        # time.sleep(2)
+        user_data_dir = os.path.join(os.getcwd(), "chromium_profile")
+
+        self.__context = self.__playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False  # Met à True si tu ne veux pas afficher la fenêtre
+        )
         self.page = self.__context.new_page()
 
     def get_new_page(self):
@@ -138,7 +167,6 @@ class LinkedInBot:
             pass
 
         self.__session_open = True
-
 
     def get_data_from_post(self, post_url, poll_format: bool = False):
         data = {}
@@ -230,47 +258,80 @@ class LinkedInBot:
     def stop(self):
         self.__playwright.stop()
 
-    def generate_post(self, post_source_url: str = None, subject: str = None):
+    def generate_post(self, subject: str = None):
         self.init_session()
 
+        with open(self.DATABASE_PATH, "r",  encoding="utf-8") as f:
+            database = json.load(f)
+
         if not subject:
-            data = self.get_data_from_post(post_source_url, poll_format=True)
+            with open(self.SUBJECT_PATH, "r", encoding="utf-8") as f:
+                data = f.readlines()
 
             answer = ""
             subject = ""
             while answer != "y":
-                subject = random.choice(data["comments"])["comment"]
+                subject = unescape_unicode(random.choice(data)).strip()
                 print(subject)
                 answer = input()
+
+        logging.info(f"Subject: {subject}")
+
+        database["todo"] = {"subject": subject}
 
         with open(self.TEXT_PATH, "r") as f:
             post_text = json.load(f)
 
         prepost = post_text["endpost"]
 
-        post = self.generator.generate_mistral_post(subject)
+        post = remove_markdown(self.generator.generate_mistral_post(subject))
+        database["todo"]["post"] = {"Mistral": {"text": post}}
         self.post(post + prepost.format(model="Mistral", subject=subject),
                   next_day_at_time("monday", hour=10, minute=30))
 
-        post = self.generator.generate_gpt_post(subject, self.get_new_page())
-        self.post(post + prepost.format(model="ChatGPT", subject=subject),
-                  next_day_at_time("tuesday", hour=10, minute=30))
+        try:
+            post = remove_markdown(self.generator.generate_gpt_post(subject, self.get_new_page()))
+            database["todo"]["post"]["ChatGPT"] = {"text": post}
+            self.post(post + prepost.format(model="ChatGPT", subject=subject),
+                      next_day_at_time("tuesday", hour=10, minute=30))
+        except Exception:
+            database["todo"]["post"]["ChatGPT"] = {"text": ""}
 
-        post = self.generator.generate_gemini_post(subject)
+        post = remove_markdown(self.generator.generate_gemini_post(subject))
+        database["todo"]["post"]["Gemini"] = {"text": post}
         self.post(post + prepost.format(model="Gemini", subject=subject),
                   next_day_at_time("wednesday", hour=10, minute=30))
 
-        post = self.generator.generate_claude_post(subject)
+        post = remove_markdown(self.generator.generate_claude_post(subject))
+        database["todo"]["post"]["Claude"] = {"text": post}
         self.post(post + prepost.format(model="Claude", subject=subject),
                   next_day_at_time("thursday", hour=10, minute=30))
 
-        self.post(post_text["poll"].format(subject=subject), next_day_at_time("friday", hour=17, minute=30),
-                  poll=True)
+        with open(self.DATABASE_PATH, "w",  encoding="utf-8") as f:
+            json.dump(database, f, ensure_ascii=False, indent=4)
+
+    def generate_poll(self):
+        # self.get_last_post_url()
+
+        with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
+            subject = json.load(f)["todo"]["subject"]
+
+        with open(self.POST_URL_PATH, "r") as f:
+            post_url = json.load(f)
+
+        with open(self.TEXT_PATH, "r") as f:
+            post_text = json.load(f)
+
+        self.init_session()
+        self.post(
+            post_text["poll"].format(subject=subject, mistral_link=post_url["Mistral"], gpt_link=post_url["ChatGPT"],
+                                     gemini_link=post_url["Gemini"], claude_link=post_url["Claude"]),
+            next_day_at_time("friday", hour=10, minute=30),
+            poll=True)
 
     def get_generated_post_link(self, post_text: str | list[str]):
         self.init_session()
-        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/")
-        self.page.get_by_role("link", name="Afficher tous les posts").click()
+        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/recent-activity/all/")
 
         if type(post_text) is str:
             post_text = [post_text]
@@ -290,7 +351,10 @@ class LinkedInBot:
             for div in all_div_post:
                 div_text = div.inner_text()
                 if text in div_text:
+                    time.sleep(1)
                     div.query_selector(f'button[aria-label="{aria_label}"]').click()
+                    # time.sleep(1)
+                    # div.query_selector(f'button[aria-label="{aria_label}"]').click()
                     done = True
                     break
 
@@ -316,21 +380,22 @@ class LinkedInBot:
         return link
 
     def get_last_post_url(self):
-        with open(self.DATABASE_PATH, "r") as f:
+        with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
             database: dict = json.load(f)
+
+        self.init_session()
 
         todo = database["todo"]
 
         post_text = [value["text"] for value in todo["post"].values()]
 
-        post_link = {model:url for model, url in zip(todo["post"].keys(), self.get_generated_post_link(post_text))}
+        post_link = {model: url for model, url in zip(todo["post"].keys(), self.get_generated_post_link(post_text))}
 
         with open(self.POST_URL_PATH, "w") as f:
             json.dump(post_link, f)
 
-
     def update_database(self):
-        with open(self.DATABASE_PATH, "r") as f:
+        with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
             database: dict = json.load(f)
 
         with open(self.POST_URL_PATH, "r") as f:
@@ -348,24 +413,23 @@ class LinkedInBot:
 
             post_data = self.get_data_from_post(link)
 
-            data[model].update({"stat": post_data})
+            data["post"][model].update({"stat": post_data})
 
         database["todo"].update(data)
 
-        with open(self.DATABASE_PATH, "w") as f:
-            json.dump(database, f)
+        with open(self.DATABASE_PATH, "w", encoding="utf-8") as f:
+            json.dump(database, f, ensure_ascii=False, indent=4)
 
     def get_poll_data(self):
 
-        with open(self.DATABASE_PATH, "r") as f:
+        with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
             database: dict = json.load(f)
 
         with open(self.TEXT_PATH, "r") as f:
             text: str = json.load(f)["poll"].split("\n")[2].format(subject=database["todo"]["subject"])
 
         self.init_session()
-        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/")
-        self.page.get_by_role("link", name="Afficher tous les posts").click()
+        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/recent-activity/all/")
 
         aria_label = "Ouvrir le menu de commandes pour le post de Edouard DUCLOY"
         time.sleep(3)
@@ -405,18 +469,18 @@ class LinkedInBot:
 
         database["todo"]["poll"] = post_data
 
-        with open(self.DATABASE_PATH, "w") as f:
-            json.dump(database, f)
+        with open(self.DATABASE_PATH, "w", encoding="utf-8") as f:
+            json.dump(database, f, ensure_ascii=False, indent=4)
 
     def commit_database(self):
-        with open(self.DATABASE_PATH, "r") as f:
+        with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
             database: dict = json.load(f)
 
         database["data"].append(database["todo"])
         database.pop("todo")
 
-        with open(self.DATABASE_PATH, "w") as f:
-            json.dump(database, f)
+        with open(self.DATABASE_PATH, "w", encoding="utf-8") as f:
+            json.dump(database, f, ensure_ascii=False, indent=4)
 
         repo = Repo(os.path.dirname(self.DATABASE_PATH))
 
@@ -424,5 +488,3 @@ class LinkedInBot:
         repo.index.commit(f"Database update from {datetime.today().strftime('%Y/%m/%d')}")
         origin = repo.remote(name="origin")
         origin.push()
-
-
