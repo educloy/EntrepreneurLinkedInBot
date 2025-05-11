@@ -176,3 +176,6 @@ cython_debug/
 .access_token
 api_key.json
 post_url.json
+subject.txt
+playground/
+GeneratedPostDatabase/
