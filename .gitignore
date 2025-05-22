@@ -179,3 +179,4 @@ post_url.json
 subject.txt
 playground/
 GeneratedPostDatabase/
+.DS_Store
