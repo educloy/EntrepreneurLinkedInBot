@@ -8,10 +8,11 @@ from datetime import datetime, timedelta
 from typing import Literal
 import pyperclip
 from formatter import MarkdownFormatter
+import unicodedata
 
 from bs4 import BeautifulSoup
 
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import sync_playwright, Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from postgenerator import PostGenerator
 
 from dotenv import load_dotenv
@@ -84,11 +85,20 @@ def remove_markdown(text):
 
     return text
 
+def normalise_text(texte):
+    # Supprimer les caractères de mise en forme Unicode (gras, italique, etc.)
+    texte_normalise = unicodedata.normalize('NFKD', texte)
+    # Garder seulement les caractères alphanumériques, espaces et emojis
+    texte_clean = re.sub(r'[^\w\s\U0001F300-\U0001F9FF]', '', texte_normalise, flags=re.UNICODE)
+    return texte_clean.lower().strip()
+
 class LinkedInBot:
     DATABASE_PATH = os.path.join(os.path.dirname(__file__), "GeneratedPostDatabase/database.json")
     TEXT_PATH = os.path.join(os.path.dirname(__file__), "text.json")
     POST_URL_PATH = os.path.join(os.path.dirname(__file__), "post_url.json")
     SUBJECT_PATH = os.path.join(os.path.dirname(__file__), "subject.txt")
+    LINKEDIN_HOME = "https://www.linkedin.com/home"
+    LINKEDIN_ALL_POST = "https://www.linkedin.com/in/edouard-ducloy-910091a3/recent-activity/all/"
 
     def __init__(self):
         self.generator = PostGenerator()
@@ -97,6 +107,7 @@ class LinkedInBot:
         self.__context: BrowserContext | None = None
         self.generator = PostGenerator()
         self.__session_open = False
+        self.init_session()
 
     def post(self, msg: str, date: datetime, poll=False):
         self.page.get_by_role("button", name="Commencer un post").click()
@@ -104,6 +115,41 @@ class LinkedInBot:
         time.sleep(1)
 
         if poll:
+            try:
+                # Wait for the button to be visible and clickable
+                print("Waiting for the close button to appear...")
+
+                # Method 1: By class and aria-label attribute
+                button = self.page.wait_for_selector(
+                    '.share-creation-state__preview-container-btn[aria-label="Supprimer le média"]',
+                    state='visible',
+                    timeout=5000)
+                button.click()
+                print("Button closed successfully")
+
+            except PlaywrightTimeoutError:
+                print("Method 1 failed, trying alternative...")
+                try:
+                    # Method 2: By DOM structure
+                    button = self.page.wait_for_selector('.share-creation-state__preview-container-controls button',
+                                                    state='visible',
+                                                    timeout=10000)  # 10s for this attempt
+                    button.click()
+                    print("Button closed using alternative selector")
+
+                except PlaywrightTimeoutError:
+                    print("Method 2 failed, last attempt...")
+                    try:
+                        # Method 3: By icon
+                        button = self.page.wait_for_selector('button:has(svg[data-test-icon="close-small"])',
+                                                        state='visible',
+                                                        timeout=10000)
+                        button.click()
+                        print("Button closed via icon selector")
+
+                    except PlaywrightTimeoutError as e:
+                        print(f"Unable to find close button after 10s: {str(e)}")
+                        raise e
             self.create_poll("Quel model vous a-t-il le plus convaincu?")
 
         self.page.get_by_label("Programmer un post").click()
@@ -112,7 +158,9 @@ class LinkedInBot:
         self.page.get_by_role("button", name="Suivant").click()
         if self.page.get_by_role("button", name="Suivant").is_visible():
             self.page.get_by_role("button", name="Suivant").click()
+        time.sleep(1)
         self.page.get_by_role("button", name="Programmer", exact=True).click()
+        time.sleep(1)
 
     def create_poll(self, msg: str):
         self.page.get_by_role("button", name="Plus").click()
@@ -146,7 +194,7 @@ class LinkedInBot:
         return self.__context.new_page()
 
     def authenticate_on_linkedin(self):
-        self.page.goto("https://www.linkedin.com/home")
+        self.page.goto(self.LINKEDIN_HOME)
         authenticate_button = self.page.get_by_role("link", name="\n          S’identifier\n      ", exact=True)
         if authenticate_button.is_visible(timeout=2):
             self.page.get_by_role("link", name="\n          S’identifier\n      ", exact=True).click()
@@ -285,26 +333,26 @@ class LinkedInBot:
 
         prepost = post_text["endpost"]
 
-        post = remove_markdown(self.generator.generate_mistral_post(subject))
-        database["todo"]["post"] = {"Mistral": {"text": post}}
+        post = self.generator.generate_mistral_post(subject)
+        database["todo"]["post"] = {"Mistral": {"text": remove_markdown(post)}}
         self.post(MarkdownFormatter.format(post) + prepost.format(model="Mistral", subject=subject),
                   next_day_at_time("monday", hour=10, minute=30))
 
         try:
-            post = remove_markdown(self.generator.generate_gpt_post(subject, self.get_new_page()))
-            database["todo"]["post"]["ChatGPT"] = {"text": post}
+            post = self.generator.generate_gpt_post(subject, self.get_new_page())
+            database["todo"]["post"]["ChatGPT"] = {"text": remove_markdown(post)}
             self.post(MarkdownFormatter.format(post) + prepost.format(model="ChatGPT", subject=subject),
                       next_day_at_time("tuesday", hour=10, minute=30))
         except Exception:
             database["todo"]["post"]["ChatGPT"] = {"text": ""}
 
-        post = remove_markdown(self.generator.generate_gemini_post(subject))
-        database["todo"]["post"]["Gemini"] = {"text": post}
+        post = self.generator.generate_gemini_post(subject)
+        database["todo"]["post"]["Gemini"] = {"text": remove_markdown(post)}
         self.post(MarkdownFormatter.format(post) + prepost.format(model="Gemini", subject=subject),
                   next_day_at_time("wednesday", hour=10, minute=30))
 
-        post = remove_markdown(self.generator.generate_claude_post(subject))
-        database["todo"]["post"]["Claude"] = {"text": post}
+        post = self.generator.generate_claude_post(subject)
+        database["todo"]["post"]["Claude"] = {"text": remove_markdown(post)}
         self.post(MarkdownFormatter.format(post) + prepost.format(model="Claude", subject=subject),
                   next_day_at_time("thursday", hour=10, minute=30))
 
@@ -312,7 +360,6 @@ class LinkedInBot:
             json.dump(database, f, ensure_ascii=False, indent=4)
 
     def generate_poll(self):
-        # self.get_last_post_url()
 
         with open(self.DATABASE_PATH, "r", encoding="utf-8") as f:
             subject = json.load(f)["todo"]["subject"]
@@ -323,7 +370,7 @@ class LinkedInBot:
         with open(self.TEXT_PATH, "r") as f:
             post_text = json.load(f)
 
-        self.init_session()
+        self.page.goto(self.LINKEDIN_HOME)
         self.post(
             post_text["poll"].format(subject=subject, mistral_link=post_url["Mistral"], gpt_link=post_url["ChatGPT"],
                                      gemini_link=post_url["Gemini"], claude_link=post_url["Claude"]),
@@ -331,8 +378,7 @@ class LinkedInBot:
             poll=True)
 
     def get_generated_post_link(self, post_text: str | list[str]):
-        self.init_session()
-        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/recent-activity/all/")
+        self.page.goto(self.LINKEDIN_ALL_POST)
 
         if type(post_text) is str:
             post_text = [post_text]
@@ -346,16 +392,14 @@ class LinkedInBot:
 
         link = []
         for text in post_text:
-            text = text.split("\n")[0]
+            text = normalise_text(text.split("\n")[0])
 
             done = False
             for div in all_div_post:
-                div_text = div.inner_text()
+                div_text = normalise_text(div.inner_text())
                 if text in div_text:
                     time.sleep(1)
                     div.query_selector(f'button[aria-label="{aria_label}"]').click()
-                    # time.sleep(1)
-                    # div.query_selector(f'button[aria-label="{aria_label}"]').click()
                     done = True
                     break
 
@@ -430,7 +474,7 @@ class LinkedInBot:
             text: str = json.load(f)["poll"].split("\n")[2].format(subject=database["todo"]["subject"])
 
         self.init_session()
-        self.page.goto("https://www.linkedin.com/in/edouard-ducloy-910091a3/recent-activity/all/")
+        self.page.goto(self.LINKEDIN_ALL_POST)
 
         aria_label = "Ouvrir le menu de commandes pour le post de Edouard DUCLOY"
         time.sleep(3)

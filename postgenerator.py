@@ -4,6 +4,7 @@ import time
 import anthropic
 from mistralai import Mistral
 from google import genai
+from google.genai import types
 
 from playwright.sync_api import Page
 from bs4 import BeautifulSoup
@@ -12,7 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class PostGenerator:
+    MAX_TOKEN = 625
 
     def __init__(self):
 
@@ -25,7 +28,7 @@ class PostGenerator:
 
     def generate_claude_post(self, prompt: str):
         model = "claude-3-7-sonnet-20250219"
-        max_tokens = 20000
+        max_tokens = self.MAX_TOKEN
         temperature = 1
         message = [
             {
@@ -43,7 +46,7 @@ class PostGenerator:
                                                       messages=message)
         return answer.content[0].text
 
-    def generate_gpt_post(self, prompt: str, page:Page):
+    def generate_gpt_post(self, prompt: str, page: Page):
         page.goto("https://chatgpt.com/")
         time.sleep(2)
         selector = f'button[aria-label="Ouvrir le menu du profil"]'
@@ -80,12 +83,15 @@ class PostGenerator:
         ]
 
         answer = self.__mistral_client.chat.complete(model=model,
-                                                     messages=message)
+                                                     messages=message,
+                                                     max_tokens=self.MAX_TOKEN)
         return answer.choices[0].message.content
 
-    def generate_gemini_post(self, prompt:str):
+    def generate_gemini_post(self, prompt: str):
         model = "gemini-2.0-flash"
         message = [self._preprompt + prompt]
-        answer = self.__gemini_client.models.generate_content(model=model, contents=message)
+        answer = self.__gemini_client.models.generate_content(model=model, contents=message,
+                                                              config=types.GenerateContentConfig(
+                                                                  max_output_tokens=self.MAX_TOKEN,
+                                                              ))
         return answer.text
-
